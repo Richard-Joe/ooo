@@ -62,3 +62,48 @@ C字符串中不能包含空字符，使得C字符串只能保存文本数据，
 #### 1.1.5. 二进制安全
 
 SDS总会多分配一个字节来容纳末尾的空字符，这样可以让保存文本数据的SDS重用一部分<string.h>库函数。
+
+### 1.2. 应用
+
+- 保存数据库中的字符串
+- 缓冲区
+	- AOF 缓冲区
+	- 客户端状态的输入缓冲区
+
+## 2. List
+
+```c
+typedef struct listNode {
+    struct listNode *prev;
+    struct listNode *next;
+    void *value;
+} listNode;
+
+typedef struct list {
+    listNode *head;
+    listNode *tail;
+    void *(*dup)(void *ptr);
+    void (*free)(void *ptr);
+    int (*match)(void *ptr, void *key);
+    unsigned long len;
+} list;
+```
+
+### 2.1. 特性
+
+- 双端
+- 无环
+- 获取表头、表尾的复杂度为O(1)
+- 获取节点数量的复杂度为O(1)
+- 多态：void * 指针来保存节点值，结合dup、free、match，可以保存各种不同类型的值。
+
+### 2.2. 应用
+
+- 列表键
+	- 比如：LRANGE integers 0 10
+- 发布和订阅
+- 慢查询
+- 监视器
+- Redis服务器：
+	- 使用链表保存多个服务器的信息
+	- 使用链表来构建客户端输出缓冲区
