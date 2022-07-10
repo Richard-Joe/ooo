@@ -157,20 +157,45 @@ typedef struct dictEntry {
 ```c
 typedef struct zskiplistNode {
     sds ele;
-    double score;
-    struct zskiplistNode *backward;
+    double score;                        // 分值
+    struct zskiplistNode *backward;      // 后退指针
     struct zskiplistLevel {
-        struct zskiplistNode *forward;
-        unsigned long span;
-    } level[];
+        struct zskiplistNode *forward;   // 前进指针
+        unsigned long span;              // 跨度
+    } level[];  // 层
 } zskiplistNode;
 
 typedef struct zskiplist {
-    struct zskiplistNode *header, *tail;
-    unsigned long length;
-    int level;
+    struct zskiplistNode *header, *tail;  // 跳跃表头尾节点
+    unsigned long length;                 // 节点数量（不算表头）
+    int level;          // 层数最大的那个节点的层数（不算表头）
 } zskiplist;
 ```
+
+### 4.1. 特性
+
+- zskiplist用于保存跳跃表信息（头尾节点、长度）、zskiplistNode用于表示跳跃表节点
+- 每个跳跃表节点的层高都是 1 至 32 之间的随机数
+- 同一个跳跃表中，多个节点可以包含相同的score，但ele必须是唯一的
+- 节点按score大小进行排序（升序），分值相同时，按ele排序
+
+#### 4.1.1. 随机生成层数
+
+```c
+#define ZSKIPLIST_P 0.25      /* Skiplist P = 1/4 */
+
+int zslRandomLevel(void) {
+    static const int threshold = ZSKIPLIST_P*RAND_MAX;
+    int level = 1;
+    while (random() < threshold)
+        level += 1;
+    return (level<ZSKIPLIST_MAXLEVEL) ? level : ZSKIPLIST_MAXLEVEL;
+}
+```
+
+随机：采用类似幂律分布的方式，较高的level不太可能返回
+
+#### 4.1.2. 插入
 
 
 ### 4.2. 应用
