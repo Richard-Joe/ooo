@@ -202,3 +202,9 @@ int zslRandomLevel(void) {
 
 - 有序集合键
 - 在集群节点中用作内部数据结构
+
+### 4.3. 参考资料
+
+http://zhangtielei.com/posts/blog-redis-skiplist.html
+https://leetcode.cn/problems/design-skiplist/
+https://blog.csdn.net/qq_42604176/article/details/110550937
