@@ -208,6 +208,85 @@ level 为 4 的概率为 P^3(1-P)
 
 #### 4.1.2. 插入
 
+简要步骤：
+
+1. 查找插入位置
+2. 为新节点随机生成level，并调整表最大层数
+3. 创建并插入新节点，更新指向新节点的每一层forward指针和span
+4. 层数大于新节点层数的前置节点，span加1
+5. 调整新节点的backward指针
+6. 表长度加1
+
+```c
+zskiplistNode *zslInsert(zskiplist *zsl, double score, sds ele) {
+	// update 记录每一层需要指向新节点的节点，x 为新节点
+    zskiplistNode *update[ZSKIPLIST_MAXLEVEL], *x;
+    // rank 记录每一层需要指向新节点的节点排名，用于更新span值
+    unsigned long rank[ZSKIPLIST_MAXLEVEL];
+    int i, level;
+
+    serverAssert(!isnan(score));
+    
+    // 查找插入位置
+    x = zsl->header;
+    for (i = zsl->level-1; i >= 0; i--) {
+        /* store rank that is crossed to reach the insert position */
+        rank[i] = i == (zsl->level-1) ? 0 : rank[i+1];
+        while (x->level[i].forward &&
+                (x->level[i].forward->score < score ||
+                    (x->level[i].forward->score == score &&
+                    sdscmp(x->level[i].forward->ele,ele) < 0)))
+        {
+            rank[i] += x->level[i].span;
+            x = x->level[i].forward;
+        }
+        update[i] = x;
+    }
+    
+    // 随机生成新节点的level
+    level = zslRandomLevel();
+    
+    // 如果新节点的level超过了最大层数
+    if (level > zsl->level) {
+    	// 增加的这些层，需要更新header节点指向新节点，先记录该层需更新的节点（设置为header）
+        for (i = zsl->level; i < level; i++) {
+            rank[i] = 0;
+            update[i] = zsl->header;
+            update[i]->level[i].span = zsl->length;
+        }
+        // 修改表最大层数
+        zsl->level = level;
+    }
+    // 创建新节点
+    x = zslCreateNode(level,score,ele);
+    for (i = 0; i < level; i++) {
+    	// 插入新节点，针对新节点的每一层，修改链表指针
+        x->level[i].forward = update[i]->level[i].forward;
+        update[i]->level[i].forward = x;
+
+        // 修改新节点每一层的span值
+        x->level[i].span = update[i]->level[i].span - (rank[0] - rank[i]);
+        // 修改指向新节点的节点每一层的span值
+        update[i]->level[i].span = (rank[0] - rank[i]) + 1;
+    }
+
+    // 对于节点层数大于新节点的前置节点，给它们的span+1
+    for (i = level; i < zsl->level; i++) {
+        update[i]->level[i].span++;
+    }
+
+	// 设置新节点的后退指针
+    x->backward = (update[0] == zsl->header) ? NULL : update[0];
+    if (x->level[0].forward)
+    	// 设置后退指针指向新节点
+        x->level[0].forward->backward = x;
+    else
+        zsl->tail = x;
+    // 表长度加1
+    zsl->length++;
+    return x;
+}
+```
 
 ### 4.2. 应用
 
@@ -227,4 +306,73 @@ level 为 4 的概率为 P^3(1-P)
 
 http://zhangtielei.com/posts/blog-redis-skiplist.html
 https://leetcode.cn/problems/design-skiplist/
-https://blog.csdn.net/qq_42604176/article/details/110550937
+
+## 4. 整数集合
+
+```c
+typedef struct intset {
+    uint32_t encoding;
+    uint32_t length;
+    int8_t contents[];
+} intset;
+```
+
+### 4.1. 特性
+
+- 底层实现为数组，以有序、无重复的方式保存集合元素
+- 升级操作为整数集合带来了操作上的灵活性，并尽可能地节约内存
+- 不支持降级
+
+#### 4.1.1. 升级
+
+1. 根据新元素类型，扩展整数集合底层数组的空间大小，并为新元素分配空间
+2. 将底层数组所有元素转换为新类型，并放置到正确位置上
+3. 将新元素添加到底层数组里面
+
+### 4.2. 应用
+
+- 集合键（当一个集合只包涵整数值元素，并且这个集合的元素数量不多时，Redis就会使用整数作为集合键的底层实现）
+
+## 5. 压缩列表
+
+```c
+-------------------------------------------------------------------------
+|  zlbytes   |   zltail   |   zllen   | entry1 | ... | entryN |  zlend  |
+-------------------------------------------------------------------------
+|  uint32_t  |  uint32_t  |  uint16_t |          ...          | uint8_t |
+```
+
+- `zlbytes`：记录整个压缩列表占用的内存字节数
+- `zltail`  ：记录起始地址到表尾节点的字节数
+- `zllen`    ：zllen < UINT16_MAX 记录压缩列表包含的节点数量；zllen == UINT16_MAX，节点的真实数量需要遍历整个列表得出。
+- `zlend`    ：特殊值 0xFF，用于标记压缩列表的末端
+
+
+```c
+-------------------------------------------------------------------------
+|  previous_entry_length  |      encoding       |   content   |
+-------------------------------------------------------------------------
+|       1 or 5 bytes      |  1 or 2 or 5 bytes  |     ...     |
+```
+
+- `previous_entry_length`： 记录前一个节点的长度。如果前一个节点长度小于 254 字节，则previous_entry_length占用 1 字节。否则，占用5字节，第一个字节设置为 0xFE，后面四个字节保存前一节点的长度。
+- `encoding`： 记录了节点的content属性所保存数据的类型和长度，前两位编码代表类型：
+	- 00：1 字节长的数组编码，content长度 小于 1 << 6 
+	- 01：2 字节长的数组编码，content长度 小于 1 << 14 
+	- 10：5 字节长的数组编码，content长度 小于 1 << 32 （只使用后面4个字节） 
+	- 11：整数编码（占用1字节）
+- `content`：保存节点的值，可以是字节数组或整数
+
+### 5.1. 连锁更新
+
+添加新节点或删除节点，可能会引发连锁更新操作（平均O(n)，最坏O(n^2)），但这种操作出现的几率并不高。
+
+为了让每个节点的previous_entry_length都符合压缩列表对节点的要求，程序需要不断地对压缩列表执行空间重分配操作，直到entryN为止。
+
+最坏情况下，需执行N次空间重分配，每次空间重分配的最坏复杂度为O(N)，所以连锁更新的最坏复杂度为O(n^2)。
+
+### 5.2. 应用
+
+- 列表键（当一个列表键只包含少量列表项（小整数值、短字符串），Redis就会使用压缩列表来做列表键的底层实现）
+- 哈希键（当一个哈希键只包含少量键值对（小整数值、短字符串），Redis就会使用压缩列表来做哈希键的底层实现）
+
