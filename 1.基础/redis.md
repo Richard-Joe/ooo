@@ -306,6 +306,7 @@ zskiplistNode *zslInsert(zskiplist *zsl, double score, sds ele) {
 
 http://zhangtielei.com/posts/blog-redis-skiplist.html
 https://leetcode.cn/problems/design-skiplist/
+https://zhuanlan.zhihu.com/p/340929045
 
 ## 4. 整数集合
 
@@ -376,3 +377,82 @@ typedef struct intset {
 - 列表键（当一个列表键只包含少量列表项（小整数值、短字符串），Redis就会使用压缩列表来做列表键的底层实现）
 - 哈希键（当一个哈希键只包含少量键值对（小整数值、短字符串），Redis就会使用压缩列表来做哈希键的底层实现）
 
+## 6. 对象
+
+```c
+typedef struct redisObject {
+    unsigned type:4;
+    unsigned encoding:4;
+    unsigned lru:LRU_BITS; /* LRU time (relative to global lru_clock) or
+                            * LFU data (least significant 8 bits frequency
+                            * and most significant 16 bits access time). */
+    int refcount;
+    void *ptr;
+} robj;
+```
+
+Redis数据库保存的键值对，键总是一个字符串对象，值可以是字符串对象、列表对象、哈希对象、集合对象、有序集合对象。
+
+`TYPE` 命令返回的结果是 数据库键对应 **值的对象类型**
+`OBJECT ENCODING` 命令可以查看 数据库键对应 **值对象的编码**
+
+对象类型和对象编码：
+
+`STRING`
+
+| 类型   | 编码                |
+| ------ | ------------------- |
+| string | int、embstr、raw    |
+| list   | quicklist           |
+| hash   | listpack、hashtable |
+| set    | intset、hashtable   |
+| zset   | listpack、skiplist  |
+
+备注：redis后面用listpack替代ziplist。
+
+看源码定义，zipmap、linkedlist、ziplist不再使用了。
+```c
+#define OBJ_ENCODING_RAW 0     /* Raw representation */
+#define OBJ_ENCODING_INT 1     /* Encoded as integer */
+#define OBJ_ENCODING_HT 2      /* Encoded as hash table */
+#define OBJ_ENCODING_ZIPMAP 3  /* No longer used: old hash encoding. */
+#define OBJ_ENCODING_LINKEDLIST 4 /* No longer used: old list encoding. */
+#define OBJ_ENCODING_ZIPLIST 5 /* No longer used: old list/hash/zset encoding. */
+#define OBJ_ENCODING_INTSET 6  /* Encoded as intset */
+#define OBJ_ENCODING_SKIPLIST 7  /* Encoded as skiplist */
+#define OBJ_ENCODING_EMBSTR 8  /* Embedded sds string encoding */
+#define OBJ_ENCODING_QUICKLIST 9 /* Encoded as linked list of listpacks */
+#define OBJ_ENCODING_STREAM 10 /* Encoded as a radix tree of listpacks */
+#define OBJ_ENCODING_LISTPACK 11 /* Encoded as a listpack */
+```
+
+### 6.1. 为什么有序集合需要同时使用跳跃表和字典实现？
+```c
+typedef struct zset {
+    dict *dict;
+    zskiplist *zsl;
+} zset;
+```
+
+首先，
+
+- 跳跃表用于范围操作
+- 字典用于ele到score的映射
+
+1. 单独使用字典，字典是无序的，如果做范围操作（ZRANK、ZRANGE），需要排序至少O(NlogN)复杂度，额外O(N)内存空间。
+2. 单独使用跳跃表，根据ele查找score复杂度将从O(1)变为O(logN)。
+
+### 6.2. 内存回收
+
+Redis在对象中使用 **引用计数** 实现内存回收机制
+
+### 6.3. 对象共享
+
+多个键共享同一个值对象：
+1. 将数据库键的值指针指向一个现有的值对象
+2. 将被共享的值对象的引用计数加 1
+
+
+## X. FK
+
+https://baijiahao.baidu.com/s?id=1718316080906441023&wfr=spider&for=pc
