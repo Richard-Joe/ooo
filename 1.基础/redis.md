@@ -452,6 +452,65 @@ Redis在对象中使用 **引用计数** 实现内存回收机制
 1. 将数据库键的值指针指向一个现有的值对象
 2. 将被共享的值对象的引用计数加 1
 
+## 7. 数据库
+
+```c
+struct redisServer {
+	...
+    redisDb *db;
+    int dbnum;                      /* Total number of configured DBs */
+    ...
+};
+```
+初始化服务器时，会创建dbnum个数据库。（默认 16 个）
+
+```c
+static struct config {
+    int dbnum; /* db num currently selected */
+} config;
+
+int main(int argc, char **argv) {
+    config.dbnum = 0;
+}
+```
+redis-cli 默认选择0号数据库，可以使用 SELECT 命令切换数据库。
+
+```c
+typedef struct redisDb {
+    dict *dict;                 /* The keyspace for this DB */
+    dict *expires;              /* Timeout of keys with a timeout set */
+    dict *blocking_keys;        /* Keys with clients waiting for data (BLPOP)*/
+    dict *ready_keys;           /* Blocked keys that received a PUSH */
+    dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS */
+};
+```
+使用dict保存了数据库中所有的键值对，称这个字典为键空间。
+操作：`SET`、`GET`、`DEL`、`FLUSHDB`、`RANDOMKEY`、`EXISTS`、`KEYS`...
+过期操作：`EXPIRE`、`PEXPIRE`、`EXPIREAT`、`PEXPIREAT`、’`TTL`、`PTTL`
+
+### 7.1. Redis 过期键删除策略
+
+1. 惰性删除（expireIfNeeded）
+	所有读写数据库的命令在执行之前都会调用 expireIfNeeded 做检查：
+	a. 键过期，则删除
+	b. 键未过期，则不做动作
+2. 定期删除（activeExpireCycle）
+	在规定时间内，分多次遍历各个数据库，从db->expires字典中检查一部分键的过期时间，并删除其中的过期键。
+
+- 生成RDB文件时，过期键不会被保存。
+- 载入RDB文件时，
+	- master模式：过期键被忽略。
+	- slave模式：过期键被载入。（主从同步会清空从数据库，无影响）
+- 过期键被删除后，AOF文件中会追加 DEL 命令。
+- 过期键不会被保存到重写后的AOF文件中。
+- 复制模式下，
+	- 主服务器删除过期键，会向所有从服务器发送DEL命令
+	- 从服务器执行读命令时，即使键过期，也不会被删除
+	- 从服务器只有接收到主服务器的DEL命令，才会删除过期键
+
+### 7.2. 数据库通知
+
+redis命令对数据库进行修改后，服务器会根据配置向客户端发送数据库通知。
 
 ## X. FK
 
