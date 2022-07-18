@@ -516,6 +516,30 @@ redis命令对数据库进行修改后，服务器会根据配置向客户端发
 - BGSAVE 会派生子进程处理
 - 如果开启了AOF，服务器会优先使用AOF文件来还原数据库状态。
 - 服务器在载入 RDB 文件期间，会一直处于阻塞状态
+- 用户通过配置save选项，让服务器每隔一段时间自动执行一次BGSAVE命令。
+- RDB文件是一个经过压缩的二进制文件，对于不同类型的键值对，会使用不同的方式保存。
+
+## 8. AOF 持久化
+
+- 命令请求会先保存到 `AOF缓冲区`，之后再定期写入并同步到AOF文件。
+- AOF重写：从数据库中读取键现在的值，然后用一条命令去记录键值对，代替之前记录这个键值对的多条命令。
+- AOF重写放在子进程中执行，redis服务器会维护一个 `AOF重写缓冲区` ，在子进程创建新AOF文件期间，记录服务器执行的所有写命令。子进程完成工作后，服务器会将AOF重写缓冲区的内容追加到新AOF文件末尾，使得数据库状态保持一致。
+
+## 9. 客户端
+
+```c
+typedef struct client {
+    connection *conn;
+    redisDb *db;            /* Pointer to currently SELECTed DB. */
+    robj *name;             /* As set by CLIENT SETNAME. */
+    sds querybuf;           /* Buffer we use to accumulate client queries. */
+    struct redisCommand *cmd, *lastcmd;  /* Last command executed. */
+} client;
+```
+
+伪客户端：
+1. 负责执行lua脚本的伪客户端
+2. 负责执行AOF文件命令的伪客户端
 
 
 ## X. FK
