@@ -541,6 +541,89 @@ typedef struct client {
 1. 负责执行lua脚本的伪客户端
 2. 负责执行AOF文件命令的伪客户端
 
+## 10. 主从复制
+
+`PSYNC` 命令具有 `完整重同步` 和 `部分重同步`两种模式：
+
+- 完整重同步（首次复制）：让主服务器创建并发送RDB文件，以及向从服务器发送保存在缓冲区的写命令
+- 部分重同步（断线后重复制）：主服务器将断线期间执行的写命令发送给从服务器
+	- 主/从服务器的复制偏移量
+	- 主服务器的复制积压缓冲区
+	- 服务器的运行ID
+
+命令使用：`PSYNC replicationid offset`
+
+### 10.1. 复制积压缓冲区
+
+由主服务器维护的一个`固定长度的先进先出队列`。
+
+缓冲区大小设置：`2 * second * write_size_per_second`
+
+- second：从服务器断线重连所需平均时间
+- write_size_per_second：主服务器平均每秒写命令的数据量
+
+### 10.2. 复制的实现
+
+命令：`SLAVEOF host port`
+
+1. 设置主服务器的地址和端口
+2. 建立套接字连接
+3. 发送 PING 命令
+	a. 检查套接字读写状态是否正常
+	b. 检查主服务器能否正常处理命令请求
+4. 身份验证
+5. 发送端口信息
+6. 同步（从 向 主 发送 PSYNC命令）
+7. 命令传播（同步完成后，主从服务器进入命令传播阶段，主 一直将自己的写命令发送给 从）
+
+### 10.3. 心跳检测
+
+命令：`REPLCONF ACK offset`
+
+offset 是从服务器当前的复制偏移量
+
+有三个作用：
+
+- 检测主从服务器的网络连接状态
+- 辅助实现 min-slaves 选型
+- 检测命令丢失
+
+## 11. 哨兵
+
+```c
+struct sentinelState {
+    char myid[CONFIG_RUN_ID_SIZE+1]; /* This sentinel ID. */
+    dict *masters;      /* Dictionary of master sentinelRedisInstances.
+                           Key is the instance name, value is the
+                           sentinelRedisInstance structure pointer. */
+} sentinel;
+
+typedef struct sentinelRedisInstance {
+    int flags;      /* See SRI_... defines */
+    char *name;     /* Master name from the point of view of this sentinel. */
+    char *runid;    /* Run ID of this instance, or unique ID if is a Sentinel.*/
+    sentinelAddr *addr; /* Master host. */
+    dict *slaves;       /* Slaves for this master instance. */
+} sentinelRedisInstance;
+```
+
+对于每个被监视的主/从服务器，Sentinel 会创建两个连向主/从服务器的网络连接：
+
+- 命令连接，用于向服务器发送命令，并接受命令回复
+- 订阅连接，用于订阅服务器的 `__sentinel__:hello` 频道
+
+### 11.1. 获取主/从服务器信息
+
+Sentinel 默认每`10`秒一次，通过命令连接向主服务器发送 `INFO` 命令，并分析命令回复：
+
+- 主服务器的：run_id、role
+- 从服务器的：ip、port、state、offset、lag  （根据ip:port，可自动发现从服务器）
+
+Sentinel 默认每`10`秒一次，通过命令连接向从服务器发送 `INFO` 命令，并分析命令回复：
+
+- 从服务器的：run_id、role
+- 主服务器的：master_ip、master_port、master_link_status、...
+
 
 ## X. FK
 
