@@ -603,6 +603,7 @@ typedef struct sentinelRedisInstance {
     char *name;     /* Master name from the point of view of this sentinel. */
     char *runid;    /* Run ID of this instance, or unique ID if is a Sentinel.*/
     sentinelAddr *addr; /* Master host. */
+    dict *sentinels;    /* Other sentinels monitoring the same master. */
     dict *slaves;       /* Slaves for this master instance. */
 } sentinelRedisInstance;
 ```
@@ -624,6 +625,93 @@ Sentinel 默认每`10`秒一次，通过命令连接向从服务器发送 `INFO`
 - 从服务器的：run_id、role
 - 主服务器的：master_ip、master_port、master_link_status、...
 
+### 11.2. 订阅频道
+
+默认情况下，Sentinel 会`2`秒一次，通过命令连接向所有被监视的主/从服务器发送：
+
+`PUBLISH __sentinel__:hello "<s_ip>,<s_port>,<s_runid>,<s_epoch>,<m_name>,<m_ip>,<m_ip>,<m_epoch>,"`
+
+当 Sentinel 与一个主/从服务器建立 `订阅连接` 后，Sentinel就会通过订阅连接，发送：
+
+`SUBSCRIBE __sentinel__:hello`
+
+所以，每个 Sentinel存在两个连接：
+
+- 通过命令连接发送信息到频道
+- 通过订阅连接从频道接收信息
+
+![sentinel_1](./_img/sentinel_1.PNG)
+
+多个 Sentinel的情形：
+
+![sentinel_2](./_img/sentinel_2.PNG)
+
+当Sentinel通过频道信息发现一个新的Sentinel时，它不仅会为新的Sentinel在`sentinelRedisInstance->sentinels`字典中创建相应实例结构，还会创建一个连向新Sentinel的命令连接，而新的Sentinel也同样会创建连向这个Sentinel的命令连接。
+
+![sentinel_3](./_img/sentinel_3.PNG)
+
+### 11.3. 下线
+
+#### 11.3.1. 主观下线
+
+默认情况下，Sentinel会每秒一次向所有与它创建了命令连接的实例（主、从、其他Sentinel）发送`PING`命令，并通过返回回复来判断是否在线。
+
+Sentinel配置文件中 `sentinel down-after-milliseconds mymaster 30000`指定了Sentinel判断实例进入主观下线所需的时间。
+
+`sentinelRedisInstance->flags`属性中打开`SRI_S_DOWN`，表示进入主观下线状态
+
+#### 11.3.1. 客观下线
+
+当 Sentinel 将一个主服务器判断为 `主观下线` 后，它会向同样监视这个主服务器的其他Sentinel进行询问，看它们是否也认为主服务器已经进入了下线状态（可以是主观，或者客观）。当接收到足够数量的已下线判断，Sentinel将会判定`从服务器`为客观下线，并对`主服务器`执行`故障转移`操作。
+
+询问其他Sentinel是否同意主服务器已下线：
+
+`SENTINEL is-master-down-by-addr <ip> <port> <current_epoch> <runid>`
+
+客观下线判断条件：
+
+`sentinel monitor mymaster 127.0.0.1 6379 2`
+
+当认为主服务器已下线的Sentinel数量，超过设置的参数值时，该Sentinel就会认为主服务器进入客观下线状态。
+
+`sentinelRedisInstance->flags`属性中打开`SRI_O_DOWN`，表示进入客观下线状态。
+
+### 11.4. 选举领头
+
+当一个主服务器被判断为客观下线时，监视这个下线主服务器的各个Sentinel会进行协商，选举出一个领头Sentinel，并由领头Sentinel对下线主服务器进行故障转移操作。
+
+1. 所有在线的Sentinel都会参与选举
+2. 所有Sentinel都有一次将某个Sentinel设置为局部领头Sentinel的机会，一旦设置，不能更改
+3. 每个发现主服务器进入客观下线Sentinel都会要求其他Sentinel将自己设置为局部领头
+4. 发送`SENTINEL is-master-down-by-addr`命令，runid参数为发送方的runid（不是 * ），表示要求接收方将发送方设置为局部领头
+5. 接收方采用`先到先得`的方式，后接收到的设置请求都会拒绝
+6. 接收方回复中`leader_runid`和`leader_epoch`记录了局部领头的runid和epoch
+7. 发送方收到回复后，检查`leader_runid`和`leader_epoch`是否和自己一致，**如果某个Sentinel被半数以上的Sentinel设置成了局部领头，那么这个Sentinel就成为领头。**
+8. 给定时间内，未选举出领头，将在结束后再次选举，直到选出为止。
+
+### 11.5. 故障转移
+
+选举成功后，领头Sentinel对已下线的主服务器执行故障转移：
+1. 在已下线主服务器的所有从服务器里面，挑选一个，转换为主服务器
+
+	> - 挑选规则：
+	> 	- 删除下线的从服务器
+	> 	- 删除最近5秒内没有回复过领头Sentinel INFO命令的从服务器
+	> 	- 删除与已下线主服务器连接断开超过`down-after-milliseconds * 10`毫秒的从服务器
+	> 	- 依次按照从服务器的 `priority`最大、`offset`最大、`runid`最小 进行排序
+	> - 发送`SLAVEOF no one`，使其转为主服务器
+
+2. 将所有从服务器改为 replication 新的主服务器
+
+	> - 发送`SLAVEOF <new_master_ip> <new_master_port>`
+
+3. 将已下线主服务器改为 replication 新的主服务器
+
+	> - 待重新上线时，Sentinel就会发送`SLAVEOF <new_master_ip> <new_master_port>`
+
+### 11.6. Raft 算法
+
+https://blog.csdn.net/daaikuaichuan/article/details/98627822
 
 ## X. FK
 
