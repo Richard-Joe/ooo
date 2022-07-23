@@ -1,5 +1,7 @@
 # Redis
 
+[TOC]
+
 ## 1. SDS
 
 ```c
@@ -712,6 +714,134 @@ Sentinel配置文件中 `sentinel down-after-milliseconds mymaster 30000`指定�
 ### 11.6. Raft 算法
 
 https://blog.csdn.net/daaikuaichuan/article/details/98627822
+
+## 12. 集群
+```c
+struct redisServer {
+	...
+    int cluster_enabled;      /* Is cluster enabled? */
+    struct clusterState *cluster;  /* State of the cluster */
+    ...
+};
+
+typedef struct clusterState {
+    clusterNode *myself;  /* This node */
+    uint64_t currentEpoch;
+    int state;            /* CLUSTER_OK, CLUSTER_FAIL, ... */
+    int size;             /* Num of master nodes with at least one slot */
+    dict *nodes;          /* Hash table of name -> clusterNode structures */
+    clusterNode *slots[CLUSTER_SLOTS];
+} clusterState;
+
+typedef struct clusterNode {
+    mstime_t ctime; /* Node object creation time. */
+    char name[CLUSTER_NAMELEN]; /* Node name, hex string, sha1-size */
+    int flags;      /* CLUSTER_NODE_... */
+    unsigned char slots[CLUSTER_SLOTS/8]; /* slots handled by this node */
+    int numslots;   /* Number of slots handled by this node */
+    char ip[NET_IP_STR_LEN];    /* Latest known IP address of this node */
+    int port;                   /* Latest known clients port (TLS or plain). */
+    clusterLink *link;          /* TCP/IP link established toward this node */
+} clusterNode;
+
+typedef struct clusterLink {
+    mstime_t ctime;             /* Link creation time */
+    connection *conn;           /* Connection to remote node */
+    sds sndbuf;                 /* Packet send buffer */
+    char *rcvbuf;               /* Packet reception buffer */
+    size_t rcvbuf_len;          /* Used size of rcvbuf */
+    size_t rcvbuf_alloc;        /* Allocated size of rcvbuf */
+    struct clusterNode *node;   /* Node related to this link. Initialized to NULL when unknown */
+    int inbound;                /* 1 if this link is an inbound link accepted from the related node */
+} clusterLink;
+```
+
+命令：`CLUSTER MEET <ip> <port>`
+
+![cluster_1](./_img/cluster_1.png)
+
+节点A和节点B握手之后，A 会将 B 的信息通过 Gossip 协议传播给集群的其他节点，让其他节点也与节点 B 进行握手，最终，节点 B 会被集群中的所有节点认识。
+
+### 12.1. 槽
+
+redis集群通过分片的方式来保持数据库中的键值对，集群的整个数据库被分为 `16384` 个槽（slot）。 当每个槽都有节点处理时，集群处于上线状态；否则，任何一个槽没有得到处理，集群处于下线状态。
+
+分配槽：`CLUSTER ADDSLOTS <slot> [slot ...]`
+
+节点除了会记录自己槽，还会将自己的槽信息告知到其他节点。
+
+`clusterState->slots`记录了集群中所有槽的指派信息。这样检查槽是否被分配，取得负责槽的节点，仅为O(1)复杂度。
+
+#### 12.1.1. 为什么使用`clusterState->slots`，还要使用`clusterNode->slots` ?
+
+- 槽信息通告到其他节点时，直接发送`clusterNode->slots`就可以了
+- 如果不使用`clusterNode->slots`，而单独使用`clusterState->slots`，那么每次通告槽信息，都需要遍历整个`clusterState->slots`数组，来统计当前节点负责处理那些槽，然后才能发送当前节点的槽信息。较为麻烦和低效。
+
+### 12.2. 执行命令
+
+![cluster_2](./_img/cluster_2.png)
+
+#### 12.2.1. 节点数据库
+
+集群节点保存键值对以及其过期方式，与单机redis服务器完全相同。
+
+区别是：节点只能使用0号数据库，单机没限制。
+
+```c
+typedef struct redisDb {
+    dict *dict;                 /* The keyspace for this DB */
+    dict *expires;              /* Timeout of keys with a timeout set */
+    clusterSlotToKeyMapping *slots_to_keys; /* Array of slots to keys. Only used in cluster mode (db 0). */
+} redisDb;
+```
+
+`slots_to_keys` 保存槽和键之间的关系
+
+### 12.3. 重新分片
+
+可以将任意数量已经指派给某个节点的槽改为指派给另一节点，并且相关槽所属的键值对也会从源节点移动到目标节点。
+
+重新分片可以在线进行，集群不需要下线，且源、目标节点均可继续处理命令请求。
+
+![cluster_3](./_img/cluster_3.png)
+
+![cluster_4](./_img/cluster_4.png)
+
+#### 12.3.1. ASK错误
+
+![cluster_5](./_img/cluster_5.png)
+
+### 12.4. 复制和故障转移
+
+设置从节点：`CLUSTER REPLICATE <node_id>`
+
+```c
+typedef struct clusterNode {
+	int numslaves;  /* Number of slave nodes, if this is a master */
+    struct clusterNode **slaves; /* pointers to slave nodes */
+    struct clusterNode *slaveof; /* pointer to the master node. Note that it
+                                    may be NULL even if the node is a slave
+                                    if we don't have the master node in our
+                                    tables. */
+    list *fail_reports;         /* List of nodes signaling this as failing */
+} clusterNode;
+
+typedef struct clusterNodeFailReport {
+    struct clusterNode *node;  /* Node reporting the failure condition. */
+    mstime_t time;             /* Time of the last report from this node. */
+} clusterNodeFailReport;
+```
+
+#### 12.4.1. 故障检测
+
+- 集群中的每个节点都会定期向其他节点发送 PING 消息，规定时间内未回复 PONG 消息，则标记为`疑似下线（probeble fail，PFAIL）`。
+- 集群各个节点会通过互相发送消息来交换集群中各个节点的状态信息（节点状态：在线、疑似下线、已下线）
+- 半数以上负责处理槽的主节点都将某个节点 x 报告为疑似下线，那么这个 x 节点将被标记为已下线，然后将x标记为已下线的节点`会向集群广播` 主节点x的FAIL消息，所有收到这条FAIL消息的节点都会立即将主节点x标记为已下线。
+- `fail_reports`记录了所有其他节点对该节点的下线报告
+
+#### 12.4.2. 故障转移
+
+- 
 
 ## X. FK
 
