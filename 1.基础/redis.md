@@ -867,6 +867,65 @@ typedef struct clusterNodeFailReport {
 - FAIL 消息
 - PUBLISH 消息
 
+## 16. 排序
+
+```c
+typedef struct _redisSortObject {
+    robj *obj;
+    union {
+        double score;
+        robj *cmpobj;
+    } u;
+} redisSortObject;
+```
+
+SORT 命令为每个被排序的键都创建一个与键长度相同的数组，数组的每个项都是redisSortObject结构。
+
+选项：`ALPHA`、`ASC`、`DESC`、`BY`、`LIMIT`、`GET`、`STORE`、
+
+## 17. 二进制位数组
+
+- redis 使用 `SDS` 保存位数组
+- SDS 使用`逆序`来保存位数组。（简化SETBIT命令；便于对位数组进行空间扩展）
+- 命令：`SETBIT`、`GETBIT`、`BITCOUNT`、`BITOP`
+
+## 18. 慢查询日志
+
+- `slowlog-log-slower-than` 指定执行时间超过多少微妙的命令请求会被记录到日志上
+- `slowlog-max-len` 指定服务器最多保存多少条慢查询日志
+
+```c
+struct redisServer {
+    list *slowlog;                  /* SLOWLOG list of commands */
+    long long slowlog_entry_id;     /* SLOWLOG current entry ID */
+    long long slowlog_log_slower_than; /* SLOWLOG time limit (to get logged) */
+    unsigned long slowlog_max_len;     /* SLOWLOG max number of items logged */
+};
+
+typedef struct slowlogEntry {
+    robj **argv;
+    int argc;
+    long long id;       /* Unique entry identifier. */
+    long long duration; /* Time spent by the query, in microseconds. */
+    time_t time;        /* Unix time at which the query was executed. */
+    sds cname;          /* Client name. */
+    sds peerid;         /* Client network address. */
+} slowlogEntry;
+```
+
+## 19. 监视器
+
+- 客户端执行`MONITOR`命令，将转换为监视器，接收并打印服务器处理的每个命令请求。
+- 标识：REDIS_MONITOR
+- 服务器将监视器记录在monitors链表中
+- 每次处理命令请求，服务器会遍历monitor链表，将相关信息发给监视器
+
+```c
+struct redisServer {
+    list *monitors;    /* List of MONITORs */
+};
+```
+
 ## X. FK
 
 https://baijiahao.baidu.com/s?id=1718316080906441023&wfr=spider&for=pc
