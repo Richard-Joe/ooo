@@ -867,7 +867,66 @@ typedef struct clusterNodeFailReport {
 - FAIL 消息
 - PUBLISH 消息
 
-## 16. 排序
+## 13. 发布和订阅
+
+订阅频道：`SUBSCRIBE channel [channel ...]`
+
+订阅模式：`PSUBSCRIBE pattern [pattern ...]`
+
+发布消息：`PUBLISH channel message`
+
+退订频道：`UNSUBSCRIBE [channel [channel ...]]`
+
+退订频道：`PUNSUBSCRIBE [pattern [pattern ...]]`
+
+```c
+struct redisServer {
+    dict *pubsub_channels;  /* Map channels to list of subscribed clients */
+    dict *pubsub_patterns;  /* A dict of pubsub_patterns */
+};
+```
+
+## 14. 事务
+
+命令：`MULTI`、`EXEC`、`WATCH`
+
+```c
+typedef struct client {
+    multiState mstate;      /* MULTI/EXEC state */
+} client;
+
+typedef struct multiState {
+    multiCmd *commands;     /* Array of MULTI commands */
+    int count;              /* Total number of MULTI commands */
+    int cmd_flags;          /* The accumulated command flags OR-ed together.
+                               So if at least a command has a given flag, it
+                               will be set in this field. */
+    int cmd_inv_flags;      /* Same as cmd_flags, OR-ing the ~flags. so that it
+                               is possible to know if all the commands have a
+                               certain flag. */
+    size_t argv_len_sums;    /* mem used by all commands arguments */
+} multiState;
+```
+
+`WATCH` 命令，可以监视任意数量的数据库键，并在EXEC命令执行时，检查被监视的键是否至少有一个已经被修改过了，如果是，服务器将拒绝执行事务，并返回空回复。
+
+```c
+typedef struct redisDb {
+    dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS */
+} redisDb;
+```
+
+### 14.1. ACID
+
+Redis 事务具有以下性质：
+
+- 原子性（Atomicity）
+- 一致性（Consistency）：指没有包含非法或无效的错误数据
+- 隔离性（Isolation）：Redis使用单线程执行，且执行事务期间不会被中断。（事务以串行方式运行）
+- 耐久性（Durability）：根据RDB或AOF来保证
+
+
+## 15. 排序
 
 ```c
 typedef struct _redisSortObject {
@@ -883,13 +942,13 @@ SORT 命令为每个被排序的键都创建一个与键长度相同的数组，
 
 选项：`ALPHA`、`ASC`、`DESC`、`BY`、`LIMIT`、`GET`、`STORE`、
 
-## 17. 二进制位数组
+## 16. 二进制位数组
 
 - redis 使用 `SDS` 保存位数组
 - SDS 使用`逆序`来保存位数组。（简化SETBIT命令；便于对位数组进行空间扩展）
 - 命令：`SETBIT`、`GETBIT`、`BITCOUNT`、`BITOP`
 
-## 18. 慢查询日志
+## 17. 慢查询日志
 
 - `slowlog-log-slower-than` 指定执行时间超过多少微妙的命令请求会被记录到日志上
 - `slowlog-max-len` 指定服务器最多保存多少条慢查询日志
@@ -913,7 +972,7 @@ typedef struct slowlogEntry {
 } slowlogEntry;
 ```
 
-## 19. 监视器
+## 18. 监视器
 
 - 客户端执行`MONITOR`命令，将转换为监视器，接收并打印服务器处理的每个命令请求。
 - 标识：REDIS_MONITOR
